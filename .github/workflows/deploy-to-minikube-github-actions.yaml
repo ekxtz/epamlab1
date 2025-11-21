@@ -8,21 +8,56 @@ jobs:
     name: build Node.js Docker Image and deploy to minikube
     steps:
     - uses: actions/checkout@v2
+    
     - name: Start minikube
       uses: medyagh/setup-minikube@master
+      
     - name: Try the cluster !
       run: kubectl get pods -A
+      
     - name: Build image
       run: |
           export SHELL=/bin/bash
+          # Переключаем Docker на Minikube
           eval $(minikube -p minikube docker-env)
+          
+          # Собираем образ
           docker build -f ./Dockerfile -t devopshint/node-app:latest .
+          
           echo -n "verifying images:"
           docker images         
+
     - name: Deploy to minikube
-      run:
+      run: |
         kubectl apply -f k8s-node-app.yaml
+        
+        # ВАЖНО: Ждем, пока под запустится (до 90 секунд)
+        # Если под упадет (CrashLoopBackOff), этот шаг покажет ошибку
+        echo "Waiting for deployment..."
+        kubectl rollout status deployment/nodejs-app --timeout=90s
+
+    - name: Diagnostics (Run if failure occurs)
+      if: always() # Запускать всегда, даже если предыдущий шаг упал
+      run: |
+        echo "--- Pod Status ---"
+        kubectl get pods -l app=nodejs-app
+        
+        # Получаем имя пода
+        POD_NAME=$(kubectl get pods -l app=nodejs-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        
+        if [ -n "$POD_NAME" ]; then
+          echo "--- Events ---"
+          kubectl describe pod $POD_NAME
+          
+          echo "--- Logs ---"
+          kubectl logs $POD_NAME
+        else
+          echo "No pod found to diagnose."
+        fi
+
     - name: Test service URLs
+      # Запускать только если Deploy прошел успешно
+      if: success() 
       run: |
           minikube service list
           minikube service nodejs-app --url
